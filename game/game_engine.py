@@ -1,6 +1,7 @@
 import pygame
 import random
 from game.beat import Note, LANES, LANE_KEYS, LANE_LABELS, LANE_COLORS
+from game.sound import load_hit_sounds
 
 WIDTH, HEIGHT = 480, 640
 FPS = 60
@@ -12,7 +13,7 @@ LANE_W = WIDTH // LANES
 class GameEngine:
     def __init__(self):
         pygame.init()
-        pygame.mixer.init()
+        self.hit_sounds = load_hit_sounds()  # {} if no audio device
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
         pygame.display.set_caption("Rhythm Tap")
         self.clock = pygame.time.Clock()
@@ -75,6 +76,9 @@ class GameEngine:
             self.max_combo = max(self.max_combo, self.combo)
             self.score += pts * max(1, self.combo // 5)
             self.feedback.append([grade, col, 40, lane_x, HIT_Y - 30])
+            snd = self.hit_sounds.get(grade)
+            if snd:
+                snd.play()
         else:
             self.combo = 0
             self.misses += 1
