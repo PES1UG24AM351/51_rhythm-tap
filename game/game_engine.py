@@ -5,6 +5,7 @@ from game.sound import load_hit_sounds
 
 WIDTH, HEIGHT = 480, 640
 FPS = 60
+BPM = 120                   # notes spawn exactly on these beats
 HIT_Y = HEIGHT - 80
 HIT_WINDOW = 30
 BG = (15, 10, 25)
@@ -17,7 +18,7 @@ HOLD_BONUS = 2              # hold notes are worth 2x a tap of the same grade
 class GameEngine:
     def __init__(self):
         pygame.init()
-        self.hit_sounds = load_hit_sounds()  # {} if no audio device
+        self.hit_sounds,self.hold_sounds = load_hit_sounds()  # {} if no audio device
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
         pygame.display.set_caption("Rhythm Tap")
         self.clock = pygame.time.Clock()
@@ -25,14 +26,23 @@ class GameEngine:
         self.big_font = pygame.font.SysFont("monospace", 44, bold=True)
         self.reset()
 
+    def _stop_hold_sound(self, note):
+        ch = getattr(note, 'sound_channel', None)
+        if ch:
+            ch.fadeout(30)
+            note.sound_channel = None
+
     def reset(self):
+        if pygame.mixer.get_init():
+            pygame.mixer.stop()
         self.notes = []
         self.score = 0
         self.combo = 0
         self.max_combo = 0
         self.misses = 0
-        self.spawn_timer = 0
-        self.spawn_interval = 45
+        self.bpm = BPM
+        self.beat_interval = FPS * 60.0 / self.bpm   # frames per beat (30 at 120 BPM)
+        self.beat_counter = 0.0
         self.lane_free_frame = [0] * LANES   # lane is blocked by a hold note until this frame
         self.speed = 5
         self.frame = 0
@@ -73,6 +83,7 @@ class GameEngine:
         for note in self.notes:
             if isinstance(note, HoldNote) and note.lane == lane and note.holding and not note.hit:
                 note.hit = True          # consume it so it disappears
+                self._stop_hold_sound(note)
                 self.combo = 0
                 self.misses += 1
                 self.feedback.append(["DROP", (220,60,60), 40, lane_x, HIT_Y - 30])
@@ -106,7 +117,10 @@ class GameEngine:
                 # Head judged now, but points are only paid after a full 1s hold
                 best.holding = True
                 best.points = pts
-                best.y = HIT_Y - Note.HEIGHT // 2     # snap head onto the hit line
+                best.y = HIT_Y - Note.HEIGHT // 2
+                hold_snd = self.hold_sounds.get(grade)
+                if hold_snd:
+                    best.sound_channel = hold_snd.play(loops=-1)     # snap head onto the hit line
             else:
                 best.hit = True
                 self.combo += 1
@@ -121,14 +135,15 @@ class GameEngine:
         if self.game_over: return
         self.frame += 1
         self.spawn_timer += 1
-        # Difficulty ramp: every 600 frames (~10s), independent of spawning
+        # Difficulty ramp: faster scroll only. Spawn rate is locked to the BPM.
         if self.frame % 600 == 0:
             self.speed = min(10, self.speed + 0.5)
-            self.spawn_interval = max(25, self.spawn_interval - 2)
 
-        if self.spawn_timer >= self.spawn_interval:
+        # Beat clock: subtracting the interval, instead of zeroing, keeps it drift-free
+        self.beat_counter += 1
+        if self.beat_counter >= self.beat_interval:
+            self.beat_counter -= self.beat_interval
             self.spawn_note()
-            self.spawn_timer = 0
 
         for note in self.notes:
             note.update()
@@ -138,6 +153,7 @@ class GameEngine:
                 self.combo = 0
             if isinstance(note, HoldNote) and note.completed and not note.hit:
                 note.hit = True
+                self._stop_hold_sound(note)
                 self.combo += 1
                 self.max_combo = max(self.max_combo, self.combo)
                 self.score += note.points * HOLD_BONUS * max(1, self.combo // 5)
@@ -149,6 +165,8 @@ class GameEngine:
 
         if self.misses >= 15:
             self.game_over = True
+            if pygame.mixer.get_init():
+                pygame.mixer.stop()
 
     def draw(self):
         self.screen.fill(BG)

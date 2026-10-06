@@ -38,6 +38,7 @@ class HoldNote(Note):
         self.holding = False
         self.held_frames = 0
         self.points = 0                     # base points from head accuracy, paid on completion
+        self.sound_channel = None
 
     def update(self):
         if self.holding:
