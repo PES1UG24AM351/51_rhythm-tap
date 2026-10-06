@@ -77,18 +77,21 @@ class GameEngine:
             self.feedback.append([grade, col, 40, lane_x, HIT_Y - 30])
         else:
             self.combo = 0
+            self.misses += 1
             self.feedback.append(["MISS", (220,60,60), 40, lane_x, HIT_Y - 30])
 
     def update(self):
         if self.game_over: return
         self.frame += 1
         self.spawn_timer += 1
+        # Difficulty ramp: every 600 frames (~10s), independent of spawning
+        if self.frame % 600 == 0:
+            self.speed = min(10, self.speed + 0.5)
+            self.spawn_interval = max(25, self.spawn_interval - 2)
+
         if self.spawn_timer >= self.spawn_interval:
             self.spawn_note()
             self.spawn_timer = 0
-            if self.frame % 600 == 0:
-                self.speed = min(10, self.speed + 0.5)
-                self.spawn_interval = max(25, self.spawn_interval - 2)
 
         for note in self.notes:
             note.update()
