@@ -48,6 +48,7 @@ class GameEngine:
         self.frame = 0
         self.feedback = []  # (text, color, ttl, x, y)
         self.game_over = False
+        self.counts = {"PERFECT": 0, "GREAT": 0, "OK": 0}
 
     def spawn_note(self):
         free = [l for l in range(LANES) if self.frame >= self.lane_free_frame[l]]
@@ -117,12 +118,14 @@ class GameEngine:
                 # Head judged now, but points are only paid after a full 1s hold
                 best.holding = True
                 best.points = pts
+                best.grade = grade
                 best.y = HIT_Y - Note.HEIGHT // 2
                 hold_snd = self.hold_sounds.get(grade)
                 if hold_snd:
                     best.sound_channel = hold_snd.play(loops=-1)     # snap head onto the hit line
             else:
                 best.hit = True
+                self.counts[grade] += 1
                 self.combo += 1
                 self.max_combo = max(self.max_combo, self.combo)
                 self.score += pts * max(1, self.combo // 5)
@@ -152,6 +155,7 @@ class GameEngine:
                 self.combo = 0
             if isinstance(note, HoldNote) and note.completed and not note.hit:
                 note.hit = True
+                self.counts[note.grade] += 1
                 self._stop_hold_sound(note)
                 self.combo += 1
                 self.max_combo = max(self.max_combo, self.combo)
@@ -166,6 +170,15 @@ class GameEngine:
             self.game_over = True
             if pygame.mixer.get_init():
                 pygame.mixer.stop()
+
+    def accuracy(self):
+        """Weighted: PERFECT=100%, GREAT=2/3, OK=1/3, MISS=0, averaged over all judged notes."""
+        total = sum(self.counts.values()) + self.misses
+        if total == 0:
+            return 0.0
+        earned = (self.counts["PERFECT"] * 300 + self.counts["GREAT"] * 200
+                  + self.counts["OK"] * 100)
+        return 100.0 * earned / (total * 300)
 
     def draw(self):
         self.screen.fill(BG)
@@ -216,15 +229,33 @@ class GameEngine:
         self.screen.blit(mi, (WIDTH - 170, 10))
 
         if self.game_over:
-            ov = pygame.Surface((WIDTH,HEIGHT), pygame.SRCALPHA)
-            ov.fill((0,0,0,160))
-            self.screen.blit(ov,(0,0))
-            msg = self.big_font.render("GAME OVER", True, (220,60,60))
-            sc_msg = self.font.render(f"Final Score: {self.score}  Max Combo: {self.max_combo}x", True, (200,200,200))
-            restart = self.font.render("Press R to Restart", True, (160,160,160))
-            self.screen.blit(msg, (WIDTH//2-msg.get_width()//2, HEIGHT//2-70))
-            self.screen.blit(sc_msg, (WIDTH//2-sc_msg.get_width()//2, HEIGHT//2))
-            self.screen.blit(restart, (WIDTH//2-restart.get_width()//2, HEIGHT//2+50))
+            ov = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+            ov.fill((0, 0, 0, 190))
+            self.screen.blit(ov, (0, 0))
+
+            def center(surf, y):
+                self.screen.blit(surf, (WIDTH // 2 - surf.get_width() // 2, y))
+
+            center(self.big_font.render("GAME OVER", True, (220, 60, 60)), 110)
+            center(self.font.render(f"Score: {self.score}", True, (220, 220, 220)), 175)
+            center(self.font.render(f"Max Combo: {self.max_combo}x", True, (255, 220, 80)), 210)
+
+            rows = [
+                ("PERFECT", self.counts["PERFECT"], (255, 220, 0)),
+                ("GREAT",   self.counts["GREAT"],   (100, 220, 100)),
+                ("OK",      self.counts["OK"],      (180, 180, 255)),
+                ("MISS",    self.misses,            (220, 60, 60)),
+            ]
+            y = 275
+            for label, value, col in rows:
+                self.screen.blit(self.font.render(label, True, col), (110, y))
+                num = self.font.render(str(value), True, col)
+                self.screen.blit(num, (WIDTH - 110 - num.get_width(), y))
+                y += 36
+
+            pygame.draw.line(self.screen, (90, 90, 110), (100, y + 4), (WIDTH - 100, y + 4), 2)
+            center(self.font.render(f"Accuracy: {self.accuracy():.1f}%", True, (255, 255, 255)), y + 16)
+            center(self.font.render("Press R to Restart", True, (160, 160, 160)), y + 70)
         pygame.display.flip()
 
     def run(self):
