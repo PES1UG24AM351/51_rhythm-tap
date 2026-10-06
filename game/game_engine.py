@@ -134,7 +134,6 @@ class GameEngine:
     def update(self):
         if self.game_over: return
         self.frame += 1
-        self.spawn_timer += 1
         # Difficulty ramp: faster scroll only. Spawn rate is locked to the BPM.
         if self.frame % 600 == 0:
             self.speed = min(10, self.speed + 0.5)
