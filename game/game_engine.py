@@ -1,6 +1,6 @@
 import pygame
 import random
-from game.beat import Note, LANES, LANE_KEYS, LANE_LABELS, LANE_COLORS
+from game.beat import Note, HoldNote, LANES, LANE_KEYS, LANE_LABELS, LANE_COLORS
 from game.sound import load_hit_sounds
 
 WIDTH, HEIGHT = 480, 640
@@ -9,6 +9,10 @@ HIT_Y = HEIGHT - 80
 HIT_WINDOW = 30
 BG = (15, 10, 25)
 LANE_W = WIDTH // LANES
+HOLD_FRAMES = FPS * 1       # hold notes must be held for 1 second
+HOLD_CHANCE = 0.25          # fraction of spawns that are hold notes
+HOLD_GAP_FRAMES = 20        # breathing room in a lane after a hold note
+HOLD_BONUS = 2              # hold notes are worth 2x a tap of the same grade
 
 class GameEngine:
     def __init__(self):
@@ -29,14 +33,23 @@ class GameEngine:
         self.misses = 0
         self.spawn_timer = 0
         self.spawn_interval = 45
+        self.lane_free_frame = [0] * LANES   # lane is blocked by a hold note until this frame
         self.speed = 5
         self.frame = 0
         self.feedback = []  # (text, color, ttl, x, y)
         self.game_over = False
 
     def spawn_note(self):
-        lane = random.randint(0, LANES - 1)
-        self.notes.append(Note(lane, y=-30, speed=self.speed))
+        free = [l for l in range(LANES) if self.frame >= self.lane_free_frame[l]]
+        if not free:
+            return
+        lane = random.choice(free)
+        if random.random() < HOLD_CHANCE:
+            self.notes.append(HoldNote(lane, y=-30, speed=self.speed, hold_frames=HOLD_FRAMES))
+            # the body takes HOLD_FRAMES frames to scroll in; keep the lane clear until then
+            self.lane_free_frame[lane] = self.frame + HOLD_FRAMES + HOLD_GAP_FRAMES
+        else:
+            self.notes.append(Note(lane, y=-30, speed=self.speed))
 
     def handle_events(self):
         for event in pygame.event.get():
@@ -48,21 +61,34 @@ class GameEngine:
                     for i, key in enumerate(LANE_KEYS):
                         if event.key == key:
                             self.process_tap(i)
+            if event.type == pygame.KEYUP and not self.game_over:
+                for i, key in enumerate(LANE_KEYS):
+                    if event.key == key:
+                        self.process_release(i)
         return True
+
+    def process_release(self, lane):
+        # Releasing a key before the hold is complete drops the note
+        lane_x = lane * LANE_W + LANE_W // 2
+        for note in self.notes:
+            if isinstance(note, HoldNote) and note.lane == lane and note.holding and not note.hit:
+                note.hit = True          # consume it so it disappears
+                self.combo = 0
+                self.misses += 1
+                self.feedback.append(["DROP", (220,60,60), 40, lane_x, HIT_Y - 30])
 
     def process_tap(self, lane):
         # Find closest note in this lane near hit zone
         best = None
         best_dist = 9999
         for note in self.notes:
-            if note.lane == lane and not note.hit and not note.missed:
+            if note.lane == lane and not note.hit and not note.missed and not getattr(note, 'holding', False):
                 dist = abs(note.y + Note.HEIGHT//2 - HIT_Y)
                 if dist < best_dist:
                     best_dist = dist
                     best = note
         lane_x = lane * LANE_W + LANE_W // 2
         if best and best_dist <= HIT_WINDOW:
-            best.hit = True
             if best_dist < 8:
                 grade, pts = "PERFECT", 300
                 col = (255, 220, 0)
@@ -72,13 +98,20 @@ class GameEngine:
             else:
                 grade, pts = "OK", 100
                 col = (180, 180, 255)
-            self.combo += 1
-            self.max_combo = max(self.max_combo, self.combo)
-            self.score += pts * max(1, self.combo // 5)
             self.feedback.append([grade, col, 40, lane_x, HIT_Y - 30])
             snd = self.hit_sounds.get(grade)
             if snd:
                 snd.play()
+            if isinstance(best, HoldNote):
+                # Head judged now, but points are only paid after a full 1s hold
+                best.holding = True
+                best.points = pts
+                best.y = HIT_Y - Note.HEIGHT // 2     # snap head onto the hit line
+            else:
+                best.hit = True
+                self.combo += 1
+                self.max_combo = max(self.max_combo, self.combo)
+                self.score += pts * max(1, self.combo // 5)
         else:
             self.combo = 0
             self.misses += 1
@@ -103,8 +136,15 @@ class GameEngine:
                 note.missed = True
                 self.misses += 1
                 self.combo = 0
+            if isinstance(note, HoldNote) and note.completed and not note.hit:
+                note.hit = True
+                self.combo += 1
+                self.max_combo = max(self.max_combo, self.combo)
+                self.score += note.points * HOLD_BONUS * max(1, self.combo // 5)
+                lane_x = note.lane * LANE_W + LANE_W // 2
+                self.feedback.append(["HOLD!", (255, 220, 0), 40, lane_x, HIT_Y - 30])
 
-        self.notes = [n for n in self.notes if not (n.hit or n.missed and n.y > HEIGHT + 10)]
+        self.notes = [n for n in self.notes if not (n.hit or n.missed and n.is_offscreen(HEIGHT))]
         self.feedback = [[t,c,ttl-1,x,y] for t,c,ttl,x,y in self.feedback if ttl > 1]
 
         if self.misses >= 15:
@@ -129,8 +169,19 @@ class GameEngine:
         for note in self.notes:
             if note.hit: continue
             lx = note.lane * LANE_W + LANE_W // 2
+            color = LANE_COLORS[note.lane]
+            if isinstance(note, HoldNote):
+                if note.missed:
+                    color, body_col = (90, 90, 90), (50, 50, 50)
+                elif note.holding:
+                    body_col = color
+                else:
+                    body_col = tuple(c // 2 for c in color)
+                pygame.draw.rect(self.screen, body_col, note.get_body_rect(lx), border_radius=8)
             rect = note.get_rect(lx)
-            pygame.draw.rect(self.screen, LANE_COLORS[note.lane], rect, border_radius=5)
+            pygame.draw.rect(self.screen, color, rect, border_radius=5)
+            if isinstance(note, HoldNote) and note.holding:
+                pygame.draw.rect(self.screen, (255, 255, 255), rect, 3, border_radius=5)
 
         # Feedback
         for text, color, ttl, x, y in self.feedback:
